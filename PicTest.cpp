@@ -165,36 +165,78 @@ static RotateFlipType OrientationToFlipType(int nOrientation)
     }
 }
 
+BOOL ImageFromPath(const char* szFilePathName, Image** ppImg)
+{
+    int                 nRetCode    = 0;
+    DWORD               dwLen       = 0;
+    HANDLE              hFile       = INVALID_HANDLE_VALUE;
+    DWORD               dwFileSize  = 0;
+    DWORD               dwReadByte  = 0;
+    HGLOBAL             m_hMem      = INVALID_HANDLE_VALUE;
+    BYTE*               pbyBuffer   = nullptr;
+    IStream*            pIStream    = nullptr;
+    easyexif::EXIFInfo  exif;
+
+    assert(ppImg);
+
+    hFile = CreateFile(szFilePathName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (INVALID_HANDLE_VALUE == hFile)
+    {
+        return FALSE;
+    }
+    dwLen = GetFileSize(hFile, &dwFileSize);
+    if (0xFFFFFFFF == dwLen)
+    {
+        CloseHandle(hFile);
+        return FALSE;
+    }
+
+    // Allocate global memory on which to create stream  
+    m_hMem = GlobalAlloc(GMEM_FIXED, dwLen);
+    pbyBuffer = (BYTE*)GlobalLock(m_hMem);
+
+    ReadFile(hFile, pbyBuffer, dwLen, &dwReadByte, NULL);
+    CloseHandle(hFile);
+
+    CreateStreamOnHGlobal(m_hMem, FALSE, &pIStream);
+
+    // load from stream  
+    *ppImg = Gdiplus::Image::FromStream(pIStream);
+
+    nRetCode = exif.parseFrom(pbyBuffer, dwLen);
+    if (nRetCode == PARSE_EXIF_SUCCESS)
+    {
+        (*ppImg)->RotateFlip(OrientationToFlipType(exif.Orientation));
+    }
+
+    // free/release stuff  
+    GlobalUnlock(m_hMem);
+    GlobalFree(m_hMem);
+
+    if (pIStream)
+    {
+        pIStream->Release();
+        pIStream = nullptr;
+    }
+
+    return TRUE;
+}
+
 #define TEST_JPG_PATH "E:\\Code\\MultiMonitorScreenSaver\\IMG_0277.JPG"
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     int nRetCode = 0;
-    static Image* pimg = nullptr;
+    static Image* s_pImg = nullptr;
     switch (message)
     {
     case WM_CREATE:
         {
-            pimg = new Image(_TEXT(TEST_JPG_PATH));
-            easyexif::EXIFInfo exif;
+            if (s_pImg)
             {
-                FILE* fp = nullptr;
-                fopen_s(&fp, TEST_JPG_PATH, "rb");
-                assert(fp);
-
-                fseek(fp, 0, SEEK_END);
-                int len = ftell(fp);
-
-                fseek(fp, 0, SEEK_SET);
-                BYTE* pbyBuffer = new BYTE[len];
-                fread(pbyBuffer, len, 1, fp);
-
-                nRetCode = exif.parseFrom(pbyBuffer, len);
-                assert(nRetCode == PARSE_EXIF_SUCCESS);
-
-                fclose(fp);
-
-                pimg->RotateFlip(OrientationToFlipType(exif.Orientation));
+                delete s_pImg;
+                s_pImg = nullptr;
             }
+            ImageFromPath(TEST_JPG_PATH, &s_pImg);
         }
         break;
     case WM_COMMAND:
@@ -219,27 +261,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
             // TODO: Add any drawing code that uses hdc here...
-            if (pimg)
+            if (s_pImg)
             {
                 Graphics g(hdc);
 
                 RECT rc;
                 GetClientRect(hWnd, &rc);
-                RECT rc2 = rc;
+                RECT rcDraw = rc;
 
-                //pimg->RotateFlip(RotateFlipType::Rotate90FlipY);
-
-                int nWidth = pimg->GetWidth();
-                int nHeight = pimg->GetHeight();
+                int nWidth = s_pImg->GetWidth();
+                int nHeight = s_pImg->GetHeight();
                 if (nWidth < nHeight)
                 {
-                    rc2.right = nWidth * rc.bottom / nHeight;
+                    rcDraw.right = nWidth * rc.bottom / nHeight;
                 }
                 else
                 {
-                    rc2.bottom = nHeight * rc.right / nWidth;
+                    rcDraw.bottom = nHeight * rc.right / nWidth;
                 }
-                g.DrawImage(pimg, (rc.right - rc2.right) / 2, (rc.bottom - rc2.bottom) / 2, (int)rc2.right, (int)rc2.bottom);
+                g.DrawImage(s_pImg, (rc.right - rcDraw.right) / 2, (rc.bottom - rcDraw.bottom) / 2, (int)rcDraw.right, (int)rcDraw.bottom);
             }
             EndPaint(hWnd, &ps);
         }
